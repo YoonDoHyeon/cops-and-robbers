@@ -497,7 +497,15 @@
   }
 
   // --- WebRTC signalling by copy-paste ---
-  const ICE={iceServers:[{urls:['stun:stun.l.google.com:19302','stun:stun1.l.google.com:19302']}]};
+  // STUN(직접 연결) + 공개 TURN 중계(LTE·회사망처럼 직접 연결이 막힐 때)
+  const ICE={iceServers:[
+    {urls:['stun:stun.l.google.com:19302','stun:stun1.l.google.com:19302']},
+    {urls:['turn:openrelay.metered.ca:80','turn:openrelay.metered.ca:443','turn:openrelay.metered.ca:443?transport=tcp','turns:openrelay.metered.ca:443'],username:'openrelayproject',credential:'openrelayproject'}
+  ],iceCandidatePoolSize:2};
+  function candSummary(sdp){
+    const t={host:0,srflx:0,relay:0};(sdp.match(/a=candidate:.*typ (\w+)/g)||[]).forEach(l=>{const k=l.match(/typ (\w+)/)[1];if(k in t)t[k]++;});
+    return '경로 확보: 로컬 '+t.host+' · 공인 '+t.srflx+' · 중계 '+t.relay+(t.relay?'':' (중계 없음 — 같은 Wi‑Fi에서만 연결될 수 있어요)');
+  }
   function enc(desc){return 'CNR1:'+btoa(unescape(encodeURIComponent(JSON.stringify({type:desc.type,sdp:desc.sdp}))));}
   function dec(str){
     const m=String(str||'').replace(/\s+/g,'').match(/CNR1:([A-Za-z0-9+/=]+)/);
@@ -507,15 +515,26 @@
   function gatherDone(pc){
     return new Promise(res=>{
       if(pc.iceGatheringState==='complete')return res();
-      const to=setTimeout(res,4000);
+      const to=setTimeout(res,7000);
       pc.addEventListener('icegatheringstatechange',()=>{if(pc.iceGatheringState==='complete'){clearTimeout(to);res();}});
     });
   }
+  const FAIL_MSG='연결 실패. 두 폰이 서로 못 찾았어요. ① 카톡 안 브라우저 말고 사파리/크롬으로 열기 ② 같은 Wi‑Fi로 맞추기 ③ 한 명은 Wi‑Fi·한 명은 LTE로 바꿔보기 — 그 다음 메뉴에서 방을 다시 만들어 코드를 새로 주고받으세요.';
+  function connStatus(txt,cls){
+    const id=isHost?'h-st2':'j-st2',ld=isHost?'h-led2':'j-led2';
+    st(id,txt);led(ld,cls);
+  }
   function wirePc(pc){
     let dcT=null;
+    pc.addEventListener('iceconnectionstatechange',()=>{
+      const s=pc.iceConnectionState;
+      if(s==='checking')connStatus('연결 시도 중… (최대 20초)','wait');
+      else if(s==='connected'||s==='completed')connStatus('연결됨!','ok');
+      else if(s==='failed')connStatus(FAIL_MSG,'bad');
+    });
     pc.addEventListener('connectionstatechange',()=>{
       const s=pc.connectionState;
-      if(s==='failed'||s==='closed')onDisconnect();
+      if(s==='failed'||s==='closed'){connStatus(FAIL_MSG,'bad');onDisconnect();}
       else if(s==='disconnected'){dcT=setTimeout(()=>{if(pc.connectionState==='disconnected')onDisconnect();},6000);}
       else if(s==='connected'&&dcT){clearTimeout(dcT);dcT=null;}
     });
@@ -550,13 +569,14 @@
       await pc.setLocalDescription(await pc.createOffer());await gatherDone(pc);
       const code=enc(pc.localDescription);
       $('#h-offer').value=code;$('#h-copy').disabled=false;$('#h-share').disabled=false;
-      led('h-led1','ok');st('h-st1','코드 준비 완료 — 상대에게 보내세요');$('#h2').classList.remove('dim');
+      led('h-led1','ok');st('h-st1','코드 준비 완료 — 상대에게 보내세요. '+candSummary(pc.localDescription.sdp));$('#h2').classList.remove('dim');
       $('#h-copy').onclick=()=>copyText(code,$('#h-copy'));$('#h-share').onclick=()=>shareText(code,$('#h-share'));
       $('#h-connect').onclick=async()=>{
         try{
           const d=dec($('#h-answer').value);if(d.type!=='answer')throw new Error('이건 답장 코드가 아니에요. 상대가 "방 참가하기"에서 만든 답장 코드를 붙여넣으세요.');
           led('h-led2','wait');st('h-st2','연결 중… (몇 초 걸려요)');
           await pc.setRemoteDescription(d);
+          setTimeout(()=>{if(pc.connectionState!=='connected'&&pc.iceConnectionState!=='connected'&&pc.iceConnectionState!=='completed')connStatus(FAIL_MSG,'bad');},25000);
         }catch(e){led('h-led2','bad');st('h-st2',e.message||'연결 실패');}
       };
     }catch(e){led('h-led1','bad');st('h-st1','이 브라우저에서는 직접 연결을 만들 수 없어요: '+(e.message||e));}
@@ -575,7 +595,7 @@
         await pc.setRemoteDescription(d);await pc.setLocalDescription(await pc.createAnswer());await gatherDone(pc);
         const code=enc(pc.localDescription);
         $('#j-answer').value=code;$('#j-copy').disabled=false;$('#j-share').disabled=false;
-        led('j-led1','ok');st('j-st1','답장 코드 준비 완료');$('#j2').classList.remove('dim');led('j-led2','wait');
+        led('j-led1','ok');st('j-st1','답장 코드 준비 완료. '+candSummary(pc.localDescription.sdp));$('#j2').classList.remove('dim');led('j-led2','wait');
         $('#j-copy').onclick=()=>copyText(code,$('#j-copy'));$('#j-share').onclick=()=>shareText(code,$('#j-share'));
       }catch(e){led('j-led1','bad');st('j-st1',e.message||'실패');}
     };
